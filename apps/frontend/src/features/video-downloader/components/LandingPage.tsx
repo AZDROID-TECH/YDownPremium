@@ -78,17 +78,54 @@ const readErrorMessage = async (response: Response): Promise<string> => {
     | { message?: string }
     | null;
 
-  return payload?.message ?? "Request failed.";
+  return payload?.message ?? "requestFailed";
 };
 
 const extractErrorMessage = (error: unknown): string => {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as {
+      message?: unknown;
+      error?: unknown;
+      status?: unknown;
+      data?: { message?: unknown } | undefined;
+    };
+
+    if (typeof candidate.data?.message === "string") {
+      return candidate.data.message;
+    }
+
+    if (candidate.status === "FETCH_ERROR") {
+      return "requestFailed";
+    }
+
+    if (typeof candidate.error === "string") {
+      if (candidate.error.includes("Failed to fetch")) {
+        return "requestFailed";
+      }
+      return candidate.error;
+    }
+
+    if (typeof candidate.message === "string") {
+      if (candidate.message.includes("Failed to fetch")) {
+        return "requestFailed";
+      }
+      return candidate.message;
+    }
+  }
+
   if (error instanceof Error) {
+    if (error.message.includes("Failed to fetch")) {
+      return "requestFailed";
+    }
     return error.message;
   }
   if (typeof error === "string") {
+    if (error.includes("Failed to fetch")) {
+      return "requestFailed";
+    }
     return error;
   }
-  return "Request failed.";
+  return "requestFailed";
 };
 
 const triggerFileDownload = (blob: Blob, filename: string): void => {
@@ -317,7 +354,7 @@ export const LandingPage = () => {
       setClipValidationError(null);
       pushToast("success", t("optionsReady"));
     } catch (error) {
-      pushToast("error", extractErrorMessage(error));
+      pushToast("error", t(extractErrorMessage(error)));
     }
   };
 
@@ -487,7 +524,7 @@ export const LandingPage = () => {
       setClipValidationError(null);
       pushToast("success", t("successDownload"));
     } catch (error) {
-      pushToast("error", extractErrorMessage(error));
+      pushToast("error", t(extractErrorMessage(error)));
     } finally {
       setIsDownloading(false);
       setDownloadProgress({ phase: "idle", percent: null });
