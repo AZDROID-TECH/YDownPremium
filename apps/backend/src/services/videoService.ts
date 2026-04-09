@@ -30,8 +30,10 @@ const qualityMap: Array<{ quality: VideoQuality; minHeight: number }> = [
   { quality: "360p", minHeight: 360 }
 ];
 
-const YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=web_safari,android_vr";
+const DEFAULT_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=web_safari,android_vr";
 let cachedYtDlpBinary: string | null = null;
+let cachedYoutubeExtractorArgs: string | null = null;
+let cachedCookiesFilePath: string | null | undefined = undefined;
 
 const mimeByExtension: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -83,6 +85,15 @@ const isFormatUnavailableError = (error: unknown): boolean =>
   error instanceof Error &&
   error.message.includes("Requested format is not available");
 
+const isBotProtectionError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const lowered = error.message.toLowerCase();
+  return lowered.includes("sign in to confirm") && lowered.includes("not a bot");
+};
+
 const toErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
@@ -101,6 +112,14 @@ const toErrorMessage = (error: unknown): string => {
   }
 };
 
+const toPublicYtDlpErrorMessage = (error: unknown): string => {
+  if (isBotProtectionError(error)) {
+    return "YouTube blocked this request with bot verification. Set YTDLP_COOKIES_FILE or YTDLP_COOKIES_B64 on the backend service and redeploy.";
+  }
+
+  return toErrorMessage(error);
+};
+
 const canExecute = async (binaryPath: string): Promise<boolean> => {
   try {
     await fs.access(binaryPath, fsConstants.X_OK);
@@ -108,6 +127,97 @@ const canExecute = async (binaryPath: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+const canRead = async (filePath: string): Promise<boolean> => {
+  try {
+    await fs.access(filePath, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const getYoutubeExtractorArgs = (): string => {
+  if (cachedYoutubeExtractorArgs !== null) {
+    return cachedYoutubeExtractorArgs;
+  }
+
+  const fromEnvironment = process.env.YTDLP_YOUTUBE_EXTRACTOR_ARGS?.trim();
+  if (fromEnvironment !== undefined && fromEnvironment.length > 0) {
+    cachedYoutubeExtractorArgs = fromEnvironment;
+    return fromEnvironment;
+  }
+
+  cachedYoutubeExtractorArgs = DEFAULT_YOUTUBE_EXTRACTOR_ARGS;
+  return DEFAULT_YOUTUBE_EXTRACTOR_ARGS;
+};
+
+const readCookiesFromEnvironment = (): string | null => {
+  const inlineCookies = process.env.YTDLP_COOKIES?.trim();
+  if (inlineCookies !== undefined && inlineCookies.length > 0) {
+    return inlineCookies.replace(/\\n/g, "\n");
+  }
+
+  const base64Cookies = process.env.YTDLP_COOKIES_B64?.trim();
+  if (base64Cookies === undefined || base64Cookies.length === 0) {
+    return null;
+  }
+
+  try {
+    return Buffer.from(base64Cookies, "base64").toString("utf8");
+  } catch {
+    throw new Error("YTDLP_COOKIES_B64 is not a valid base64 string.");
+  }
+};
+
+const resolveCookiesFile = async (): Promise<string | null> => {
+  if (cachedCookiesFilePath !== undefined) {
+    return cachedCookiesFilePath;
+  }
+
+  const explicitCookiesFile = process.env.YTDLP_COOKIES_FILE?.trim();
+  if (explicitCookiesFile !== undefined && explicitCookiesFile.length > 0) {
+    const readable = await canRead(explicitCookiesFile);
+    if (!readable) {
+      throw new Error(
+        "YTDLP_COOKIES_FILE is set but file is not readable on the server."
+      );
+    }
+    cachedCookiesFilePath = explicitCookiesFile;
+    return explicitCookiesFile;
+  }
+
+  const cookiesFromEnvironment = readCookiesFromEnvironment();
+  if (cookiesFromEnvironment === null) {
+    cachedCookiesFilePath = null;
+    return null;
+  }
+
+  const tempCookiesPath = path.join(os.tmpdir(), "ydownpremium-ytdlp-cookies.txt");
+  await fs.writeFile(tempCookiesPath, cookiesFromEnvironment, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  cachedCookiesFilePath = tempCookiesPath;
+  return tempCookiesPath;
+};
+
+const buildYtDlpSharedArgs = async (): Promise<string[]> => {
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--no-progress",
+    "--extractor-args",
+    getYoutubeExtractorArgs()
+  ];
+
+  const cookiesFile = await resolveCookiesFile();
+  if (cookiesFile !== null) {
+    args.push("--cookies", cookiesFile);
+  }
+
+  return args;
 };
 
 const resolveYtDlpBinary = async (): Promise<string> => {
@@ -272,16 +382,15 @@ const normalizeOutput = async (
 
 export const fetchVideoMetadata = async (url: string): Promise<MetadataResponse> => {
   const ytDlpBinary = await resolveYtDlpBinary();
-  const { stdout } = await runCommand(ytDlpBinary, [
-    "-J",
-    "--no-playlist",
-    "--no-warnings",
-    "--no-progress",
-    "--skip-download",
-    "--extractor-args",
-    YOUTUBE_EXTRACTOR_ARGS,
-    url
-  ]);
+  const sharedArgs = await buildYtDlpSharedArgs();
+  let stdout = "";
+
+  try {
+    const result = await runCommand(ytDlpBinary, ["-J", "--skip-download", ...sharedArgs, url]);
+    stdout = result.stdout;
+  } catch (error) {
+    throw new Error(toPublicYtDlpErrorMessage(error));
+  }
 
   const parsed = JSON.parse(stdout) as YtDlpMetadata;
   const formats = parsed.formats ?? [];
@@ -310,15 +419,7 @@ export const prepareVideoDownload = async (
   };
 
   const outputTemplate = path.join(tempDir, "source.%(ext)s");
-  const baseArgs: string[] = [
-    "--no-playlist",
-    "--no-warnings",
-    "--no-progress",
-    "--extractor-args",
-    YOUTUBE_EXTRACTOR_ARGS,
-    "-o",
-    outputTemplate
-  ];
+  const baseArgs = [...(await buildYtDlpSharedArgs()), "-o", outputTemplate];
 
   if (payload.startTime !== undefined && payload.endTime !== undefined) {
     baseArgs.push(
@@ -370,6 +471,6 @@ export const prepareVideoDownload = async (
     };
   } catch (error) {
     await cleanup();
-    throw error;
+    throw new Error(toPublicYtDlpErrorMessage(error));
   }
 };

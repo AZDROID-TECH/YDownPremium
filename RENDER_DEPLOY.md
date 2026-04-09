@@ -17,6 +17,18 @@
   - Örnek: `https://ydownpremium-api.onrender.com`
 - Kaydet ve deploy et.
 
+## 3.1) YouTube bot doğrulama hatası için zorunlu backend ayarı
+Bazı videolarda Render IP'leri bot korumasına takılabilir. Bu durumda backend'e YouTube cookie ver:
+
+- `ydownpremium-api` ortam değişkenleri:
+  - `YTDLP_YOUTUBE_EXTRACTOR_ARGS=youtube:player_client=web_safari,android_vr`
+  - `YTDLP_COOKIES_B64=<base64_netscape_cookie_txt>`
+
+Notlar:
+- `YTDLP_COOKIES_B64`, Netscape formatındaki cookie dosyasının base64 halidir.
+- Alternatif olarak doğrudan dosya mount edebiliyorsan `YTDLP_COOKIES_FILE=/absolute/path/cookies.txt` kullanabilirsin.
+- Cookie ekledikten sonra mutlaka yeniden deploy et.
+
 ## 4) Kontrol
 - API sağlık kontrolü: `https://<api-servis-adı>.onrender.com/api/health`
 - Frontend açılışı: `https://<web-servis-adı>.onrender.com`
