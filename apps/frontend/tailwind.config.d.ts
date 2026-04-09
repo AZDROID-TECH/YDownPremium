@@ -1,0 +1,77 @@
+declare const _default: {
+    darkMode: "class";
+    content: string[];
+    theme: {
+        extend: {
+            colors: {
+                "on-secondary-container": string;
+                "on-tertiary": string;
+                "on-surface-variant": string;
+                "surface-container": string;
+                "surface-container-low": string;
+                "on-secondary-fixed-variant": string;
+                "tertiary-fixed-dim": string;
+                "secondary-fixed-dim": string;
+                "on-primary-fixed": string;
+                "inverse-on-surface": string;
+                "tertiary-container": string;
+                "on-primary-container": string;
+                "secondary-fixed": string;
+                "primary-dim": string;
+                secondary: string;
+                primary: string;
+                "on-error": string;
+                "on-surface": string;
+                "on-tertiary-fixed": string;
+                "inverse-surface": string;
+                "secondary-dim": string;
+                "on-tertiary-fixed-variant": string;
+                "secondary-container": string;
+                surface: string;
+                outline: string;
+                "outline-variant": string;
+                "error-container": string;
+                "tertiary-dim": string;
+                background: string;
+                "surface-container-highest": string;
+                error: string;
+                "surface-dim": string;
+                "on-secondary": string;
+                "on-secondary-fixed": string;
+                tertiary: string;
+                "surface-container-high": string;
+                "surface-tint": string;
+                "on-background": string;
+                "surface-variant": string;
+                "on-tertiary-container": string;
+                "on-primary-fixed-variant": string;
+                "primary-fixed-dim": string;
+                "surface-container-lowest": string;
+                "primary-fixed": string;
+                "primary-container": string;
+                "on-error-container": string;
+                "error-dim": string;
+                "tertiary-fixed": string;
+                "on-primary": string;
+                "surface-bright": string;
+                "inverse-primary": string;
+            };
+            borderRadius: {
+                sm: string;
+                DEFAULT: string;
+                md: string;
+                lg: string;
+                xl: string;
+                "2xl": string;
+                full: string;
+            };
+            fontFamily: {
+                headline: [string, string];
+                body: [string, string];
+                label: [string, string];
+            };
+        };
+    };
+    plugins: any[];
+};
+export default _default;
