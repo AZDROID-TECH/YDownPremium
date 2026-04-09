@@ -6,7 +6,11 @@ import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "../../../app/hooks";
 import { useFetchMetadataMutation } from "../../../shared/api/videoApi";
 import { buildApiUrl } from "../../../shared/api/baseUrl";
-import type { VideoFormat, VideoQuality } from "../../../shared/types/video";
+import type {
+  VideoFormat,
+  VideoMetadataResponse,
+  VideoQuality
+} from "../../../shared/types/video";
 import { formatDuration, parseTimeToSeconds, TIME_PATTERN } from "../model/time";
 import { setSelectedFormat, setSelectedQuality, setUrl } from "../model/videoSlice";
 
@@ -135,6 +139,48 @@ const triggerFileDownload = (blob: Blob, filename: string): void => {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(objectUrl);
+};
+
+const waitFor = async (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+
+const isRetriableMetadataError = (error: unknown): boolean => {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as {
+      status?: unknown;
+      message?: unknown;
+      error?: unknown;
+    };
+
+    if (
+      candidate.status === "FETCH_ERROR" ||
+      candidate.status === 502 ||
+      candidate.status === 503 ||
+      candidate.status === 504
+    ) {
+      return true;
+    }
+
+    if (typeof candidate.message === "string") {
+      return candidate.message.includes("Failed to fetch");
+    }
+
+    if (typeof candidate.error === "string") {
+      return candidate.error.includes("Failed to fetch");
+    }
+  }
+
+  if (error instanceof Error) {
+    return error.message.includes("Failed to fetch");
+  }
+
+  if (typeof error === "string") {
+    return error.includes("Failed to fetch");
+  }
+
+  return false;
 };
 
 const getYouTubeVideoId = (rawUrl: string): string | null => {
@@ -339,7 +385,29 @@ export const LandingPage = () => {
     clearErrors("url");
 
     try {
-      const response = await fetchMetadata({ url: normalizedUrl }).unwrap();
+      let response: VideoMetadataResponse | null = null;
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          response = await fetchMetadata({ url: normalizedUrl }).unwrap();
+          break;
+        } catch (error) {
+          lastError = error;
+          const shouldRetry = attempt === 0 && isRetriableMetadataError(error);
+          if (!shouldRetry) {
+            throw new Error(extractErrorMessage(error));
+          }
+          await waitFor(2200);
+        }
+      }
+
+      if (response === null) {
+        throw new Error(
+          lastError === null ? "requestFailed" : extractErrorMessage(lastError)
+        );
+      }
+
       if (response.availableQualities.length === 0) {
         pushToast("error", t("qualityUnknown"));
         return;
