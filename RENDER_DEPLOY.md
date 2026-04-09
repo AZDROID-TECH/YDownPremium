@@ -22,6 +22,7 @@ Bazı videolarda Render IP'leri bot korumasına takılabilir. Bu durumda backend
 
 - `ydownpremium-api` ortam değişkenleri:
   - `YTDLP_YOUTUBE_EXTRACTOR_ARGS=youtube:player_client=web_safari,android_vr`
+  - `YTDLP_JS_RUNTIMES=node`
   - `YTDLP_COOKIES_B64=<base64_netscape_cookie_txt>`
 
 Notlar:

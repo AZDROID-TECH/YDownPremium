@@ -31,9 +31,16 @@ const qualityMap: Array<{ quality: VideoQuality; minHeight: number }> = [
 ];
 
 const DEFAULT_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=web_safari,android_vr";
+const DEFAULT_JS_RUNTIMES = "node";
 let cachedYtDlpBinary: string | null = null;
 let cachedYoutubeExtractorArgs: string | null = null;
+let cachedJsRuntimes: string | null | undefined = undefined;
 let cachedCookiesFilePath: string | null | undefined = undefined;
+
+interface YtDlpSharedArgOptions {
+  extractorArgs?: string | null;
+  includeCookies?: boolean;
+}
 
 const mimeByExtension: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -114,7 +121,7 @@ const toErrorMessage = (error: unknown): string => {
 
 const toPublicYtDlpErrorMessage = (error: unknown): string => {
   if (isBotProtectionError(error)) {
-    return "YouTube blocked this request with bot verification. Set YTDLP_COOKIES_FILE or YTDLP_COOKIES_B64 on the backend service and redeploy.";
+    return "YouTube blocked this request with bot verification. Refresh cookies and set YTDLP_COOKIES_B64 (or YTDLP_COOKIES_FILE). Also keep YTDLP_JS_RUNTIMES=node and redeploy.";
   }
 
   return toErrorMessage(error);
@@ -151,6 +158,26 @@ const getYoutubeExtractorArgs = (): string => {
 
   cachedYoutubeExtractorArgs = DEFAULT_YOUTUBE_EXTRACTOR_ARGS;
   return DEFAULT_YOUTUBE_EXTRACTOR_ARGS;
+};
+
+const getJsRuntimes = (): string | null => {
+  if (cachedJsRuntimes !== undefined) {
+    return cachedJsRuntimes;
+  }
+
+  const fromEnvironment = process.env.YTDLP_JS_RUNTIMES?.trim();
+  if (fromEnvironment === undefined || fromEnvironment.length === 0) {
+    cachedJsRuntimes = DEFAULT_JS_RUNTIMES;
+    return DEFAULT_JS_RUNTIMES;
+  }
+
+  if (fromEnvironment.toLowerCase() === "off") {
+    cachedJsRuntimes = null;
+    return null;
+  }
+
+  cachedJsRuntimes = fromEnvironment;
+  return fromEnvironment;
 };
 
 const readCookiesFromEnvironment = (): string | null => {
@@ -203,21 +230,58 @@ const resolveCookiesFile = async (): Promise<string | null> => {
   return tempCookiesPath;
 };
 
-const buildYtDlpSharedArgs = async (): Promise<string[]> => {
+const buildYtDlpSharedArgs = async (
+  options?: YtDlpSharedArgOptions
+): Promise<string[]> => {
   const args = [
     "--no-playlist",
     "--no-warnings",
-    "--no-progress",
-    "--extractor-args",
-    getYoutubeExtractorArgs()
+    "--no-progress"
   ];
 
-  const cookiesFile = await resolveCookiesFile();
-  if (cookiesFile !== null) {
-    args.push("--cookies", cookiesFile);
+  const extractorArgs =
+    options?.extractorArgs === undefined ? getYoutubeExtractorArgs() : options.extractorArgs;
+  if (extractorArgs !== null) {
+    args.push("--extractor-args", extractorArgs);
+  }
+
+  const jsRuntimes = getJsRuntimes();
+  if (jsRuntimes !== null) {
+    args.push("--js-runtimes", jsRuntimes);
+  }
+
+  const includeCookies = options?.includeCookies ?? true;
+  if (includeCookies) {
+    const cookiesFile = await resolveCookiesFile();
+    if (cookiesFile !== null) {
+      args.push("--cookies", cookiesFile);
+    }
   }
 
   return args;
+};
+
+const createYtDlpSharedArgProfiles = (): YtDlpSharedArgOptions[] => {
+  const primaryExtractorArgs = getYoutubeExtractorArgs();
+  const profiles: YtDlpSharedArgOptions[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (profile: YtDlpSharedArgOptions): void => {
+    const key = `${profile.extractorArgs ?? "none"}::${profile.includeCookies === true ? "1" : "0"}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    profiles.push(profile);
+  };
+
+  pushUnique({ extractorArgs: primaryExtractorArgs, includeCookies: true });
+  pushUnique({ extractorArgs: primaryExtractorArgs, includeCookies: false });
+  pushUnique({ extractorArgs: "youtube:player_client=android_vr", includeCookies: false });
+  pushUnique({ extractorArgs: "youtube:player_client=android", includeCookies: false });
+  pushUnique({ extractorArgs: null, includeCookies: false });
+
+  return profiles;
 };
 
 const resolveYtDlpBinary = async (): Promise<string> => {
@@ -400,25 +464,27 @@ const normalizeOutput = async (
 
 export const fetchVideoMetadata = async (url: string): Promise<MetadataResponse> => {
   const ytDlpBinary = await resolveYtDlpBinary();
-  const sharedArgs = await buildYtDlpSharedArgs();
-  let stdout = "";
+  let lastError: unknown = null;
 
-  try {
-    const result = await runCommand(ytDlpBinary, ["-J", "--skip-download", ...sharedArgs, url]);
-    stdout = result.stdout;
-  } catch (error) {
-    throw new Error(toPublicYtDlpErrorMessage(error));
+  for (const profile of createYtDlpSharedArgProfiles()) {
+    try {
+      const sharedArgs = await buildYtDlpSharedArgs(profile);
+      const result = await runCommand(ytDlpBinary, ["-J", "--skip-download", ...sharedArgs, url]);
+      const parsed = JSON.parse(result.stdout) as YtDlpMetadata;
+      const formats = parsed.formats ?? [];
+
+      return {
+        title: parsed.title ?? "Unknown title",
+        thumbnail: parsed.thumbnail ?? null,
+        duration: parsed.duration ?? 0,
+        availableQualities: getQualities(formats)
+      };
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  const parsed = JSON.parse(stdout) as YtDlpMetadata;
-  const formats = parsed.formats ?? [];
-
-  return {
-    title: parsed.title ?? "Unknown title",
-    thumbnail: parsed.thumbnail ?? null,
-    duration: parsed.duration ?? 0,
-    availableQualities: getQualities(formats)
-  };
+  throw new Error(toPublicYtDlpErrorMessage(lastError));
 };
 
 export const prepareVideoDownload = async (
@@ -437,41 +503,61 @@ export const prepareVideoDownload = async (
   };
 
   const outputTemplate = path.join(tempDir, "source.%(ext)s");
-  const baseArgs = [...(await buildYtDlpSharedArgs()), "-o", outputTemplate];
-
-  if (payload.startTime !== undefined && payload.endTime !== undefined) {
-    baseArgs.push(
-      "--download-sections",
-      `*${payload.startTime}-${payload.endTime}`,
-      "--force-keyframes-at-cuts"
-    );
-  }
+  let lastError: unknown = null;
+  let downloadCompleted = false;
 
   try {
-    if (payload.format === "mp3") {
-      await tryYtDlpWithFallback(
-        ytDlpBinary,
-        baseArgs,
-        ["bestaudio/best", "bestaudio", "best"],
-        "mp3",
-        payload.url,
-        tempDir
-      );
-    } else {
-      const maxHeight = getMaxHeight(payload.quality);
-      await tryYtDlpWithFallback(
-        ytDlpBinary,
-        baseArgs,
-        [
-          createVideoSelector(payload.quality),
-          `best[height<=${maxHeight}]/best`,
-          "bestvideo+bestaudio/best",
-          "best"
-        ],
-        "mp4",
-        payload.url,
-        tempDir
-      );
+    for (const profile of createYtDlpSharedArgProfiles()) {
+      await clearDirectory(tempDir);
+      const baseArgs = [...(await buildYtDlpSharedArgs(profile)), "-o", outputTemplate];
+
+      if (payload.startTime !== undefined && payload.endTime !== undefined) {
+        baseArgs.push(
+          "--download-sections",
+          `*${payload.startTime}-${payload.endTime}`,
+          "--force-keyframes-at-cuts"
+        );
+      }
+
+      try {
+        if (payload.format === "mp3") {
+          await tryYtDlpWithFallback(
+            ytDlpBinary,
+            baseArgs,
+            ["bestaudio/best", "bestaudio", "best"],
+            "mp3",
+            payload.url,
+            tempDir
+          );
+        } else {
+          const maxHeight = getMaxHeight(payload.quality);
+          await tryYtDlpWithFallback(
+            ytDlpBinary,
+            baseArgs,
+            [
+              createVideoSelector(payload.quality),
+              `best[height<=${maxHeight}]/best`,
+              "bestvideo+bestaudio/best",
+              "best"
+            ],
+            "mp4",
+            payload.url,
+            tempDir
+          );
+        }
+
+        downloadCompleted = true;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!downloadCompleted) {
+      if (lastError instanceof Error) {
+        throw lastError;
+      }
+      throw new Error("Download could not be started.");
     }
 
     const downloadedPath = await latestFileIn(tempDir);
