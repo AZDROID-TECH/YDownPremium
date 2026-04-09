@@ -116,11 +116,14 @@ const resolveYtDlpBinary = async (): Promise<string> => {
   }
 
   const explicitBinary = process.env.YTDLP_BINARY?.trim();
-  const candidates = explicitBinary
-    ? [explicitBinary]
-    : ["/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp", "yt-dlp"];
+  const defaultCandidates = ["/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp", "yt-dlp"];
+  const candidates =
+    explicitBinary !== undefined && explicitBinary.length > 0
+      ? [explicitBinary, ...defaultCandidates]
+      : defaultCandidates;
+  const uniqueCandidates = [...new Set(candidates)];
 
-  for (const candidate of candidates) {
+  for (const candidate of uniqueCandidates) {
     const isAbsolutePath = candidate.includes("/");
     if (isAbsolutePath) {
       const executable = await canExecute(candidate);
@@ -139,7 +142,7 @@ const resolveYtDlpBinary = async (): Promise<string> => {
   }
 
   throw new Error(
-    "Working yt-dlp binary was not found. Set YTDLP_BINARY to a full executable path."
+    "Working yt-dlp binary was not found. Install yt-dlp or set a valid YTDLP_BINARY path."
   );
 };
 
