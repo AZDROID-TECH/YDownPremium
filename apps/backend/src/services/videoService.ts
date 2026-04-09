@@ -64,7 +64,7 @@ const getMaxHeight = (quality: VideoQuality): number => {
 
 const createVideoSelector = (quality: VideoQuality): string => {
   const maxHeight = getMaxHeight(quality);
-  return `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/bestvideo+bestaudio/best`;
+  return `bv*[height<=${maxHeight}]+ba/b[height<=${maxHeight}]/bestvideo[height<=${maxHeight}]+bestaudio/bv*+ba/best`;
 };
 
 const clearDirectory = async (directory: string): Promise<void> => {
@@ -287,6 +287,24 @@ const tryYtDlpWithFallback = async (
         throw error;
       }
     }
+  }
+
+  await clearDirectory(tempDir);
+  const autoArgs = [...baseArgs];
+
+  if (outputFormat === "mp4") {
+    autoArgs.push("--remux-video", "mp4");
+  } else {
+    autoArgs.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
+  }
+
+  autoArgs.push(url);
+
+  try {
+    await runCommand(ytDlpBinary, autoArgs, tempDir);
+    return;
+  } catch (fallbackError) {
+    lastError = fallbackError;
   }
 
   if (lastError !== null) {
